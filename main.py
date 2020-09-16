@@ -16,12 +16,7 @@ from bs4 import BeautifulSoup as bs
 
 # Global variables
 browser = None
-
 BASE_URL = 'https://cas-simsu.grenet.fr/login?service=http%3A%2F%2Fchamilo.univ-grenoble-alpes.fr%2Fmain%2Fauth%2Fcas%2Flogincas.php'
-
-valid_course_re = re.compile(".*courses\/[^UGA.*].*")
-valid_document_re = '/main/document/document.php'
-valid_file_ext = ['.jpg', '.png', '.docx', '.pdf']
 
 
 def get_credentials(username, password):
@@ -65,6 +60,8 @@ def get_courses(courses_page, blacklist=[]):
     '''Extract all courses and their url from the main page of chamilo.'''
     # TODO: Allow to blacklist courses
     courses = set()
+    valid_course_re = re.compile(".*courses\/[^UGA.*].*")
+
     courses_soup = bs(courses_page, "html.parser")
     headers = courses_soup.findAll('h4', class_='course-items-title')
     for course in headers:
@@ -82,47 +79,32 @@ def get_documents_route(course_page):
     return None if not docs else docs[0]['href']
 
 
-def extract_files(base_path, course_name, page_url):
+def extract_files(base_path, course_name, page_url, files=set()):
     '''Recursively extract all documents names and urls from a course page.'''
-    files = set()
     res = browser.open(page_url)
     course = bs(res, 'html.parser')
-    cdheader = res.get('Content-Disposition', None)
-    if cdheader is not None:
-        value, params = cgi.parse_header(cdheader)
-        if value == 'attachment':
-            files.add((base_path / course_name, page_url))
-            return files
 
     table = course.find('table')
     if table is None:
         return files
 
-    # All file links are inside the table
-    for td in table.findAll('td'):
-        a = td.find('a', href=True)
-        if not a or not a.get('href'):
-            continue
+    rows = table.findAll('tr')[1:]
+    for row in rows:
+        cols = row.find_all('td')
 
-        file_name = a.text.strip()
-        file_url = a['href']
-        # Don't add the `go back` link
-        if file_name == course_name or not file_name:
-            continue
+        # The image in the first column corresponds to the type of link
+        img_desc = cols[0].find('img')
 
-        # Dirty way to know if the url is for a file or for a folder
-        file_extensions = file_name.split('.')
-        file_path = base_path / course_name / file_name
+        file_a = cols[1].find('a')
+        file_name = file_a.text.strip()
+        file_url = file_a['href']
 
-        if len(file_extensions) < 2 and len(file_extensions[-1]) < 3:
-            new_files = extract_files(base_path / course_name, file_name, file_url)
-            files = files.union(new_files)
+        if 'folder' in img_desc['src']:
+            extract_files(base_path / course_name, file_name, file_url, files)
         else:
-            files.add((file_path, file_url))
-
+            files.add((base_path / course_name / file_name, file_url))
 
     return files
-
 
 def run(base_path, username, password):
     '''
@@ -164,8 +146,9 @@ def run(base_path, username, password):
             else:
                 parent = file_name.parent
                 parent.mkdir(parents=True, exist_ok=True)
-                print(f"[DOWNLOAD] {file_name.relative_to(base_path)}")
+                print(f"[START] {file_name.relative_to(base_path)}", end='')
                 download_file(file_name, file_url)
+                print(f"\r[DOWNLOAD] {file_name.relative_to(base_path)}")
                 sleep(1)  # Throttle the connection
         print()
 
